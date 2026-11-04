@@ -1,0 +1,23 @@
+# 密钥与本地配置
+.env
+
+# Python 缓存与虚拟环境
+__pycache__/
+*.pyc
+.venv/
+
+# 导出与缓存文件
+*.zip
+*.log
+.screenshots/
+.uploads/
+后端代码_main.txt
+前端代码_index.txt
+
+# 非项目文件
+*.pptx
+*简历*
+project_visual_resume.html
+WorkBuddy*.md
+.azure-cli/
+.trae-html-share-packages/
