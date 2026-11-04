@@ -17,8 +17,7 @@
 ```
 ├─ main.py                   后端服务（FastAPI，单文件）
 ├─ static/index.html         前端单页（HTML + CSS + JS）
-├─ hexagrams.json            六十四卦基础数据
-├─ yao_ci.json               六十四卦爻辞
+├─ hexagrams.json            六十四卦基础数据 + 爻辞
 ├─ jiao_yilin.json           焦氏易林林辞
 ├─ requirements.txt          依赖清单
 ├─ .env.example              环境变量模板
@@ -64,8 +63,7 @@ python main.py
 
 ## 数据说明
 
-- `hexagrams.json`：六十四卦的名称、上下卦、卦宫、五行、世爻位置、卦序与卦辞。
-- `yao_ci.json`：按卦全称索引的六条爻辞（初爻 → 上爻）。
+- `hexagrams.json`：按 6 位卦码索引的六十四卦数据，含名称、上下卦、卦宫、五行、世爻位置、卦序、卦辞，以及 `yao_ci` 字段下的六条爻辞（初爻 → 上爻）。
 - `jiao_yilin.json`：按「本卦之变卦」短名索引的焦氏易林林辞。
 
 以上文本均为传统典籍内容，仅作学习与研究使用。

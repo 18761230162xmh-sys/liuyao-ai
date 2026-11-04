@@ -443,29 +443,21 @@ load_jiao_yilin()
 
 
 # ====================================================================
-# 模块：卦爻辞知识库 + 动爻取用法则
+# 模块：动爻取用法则（爻辞已并入 hexagrams.json 的 yao_ci 字段）
 # ====================================================================
-YAO_CI_PATH = BASE_DIR / "yao_ci.json"
-YAO_CI_DB: dict = {}
-
-
-def load_yao_ci() -> dict:
-    """加载六十四卦爻辞：键=卦全称，值=[初爻..上爻] 六条爻辞"""
-    global YAO_CI_DB
-    with open(YAO_CI_PATH, "r", encoding="utf-8") as f:
-        YAO_CI_DB = json.load(f)
-    return YAO_CI_DB
 
 
 def compute_dong_yao(lines) -> list:
     return sorted([i for i, l in enumerate(lines) if l.get("is_moving")])
 
 
-def compute_yao_info(lines, ben_gua_name: str, bian_gua_name: str) -> dict:
+def compute_yao_info(lines, ben_gua_code: str, bian_gua_code: str) -> dict:
     """按「动爻取用法则」定取用主爻，并备好本卦/变卦爻辞。
     规则：0动看彖辞(卦辞)；1动取独发；2动取阴，同阴同阳取上动；
           3动取中爻；4动取下静；5动取独静；6动乾坤用九/用六，其余参彖辞+变卦爻辞。
     返回信息供前端展示与 AI prompt 注入。"""
+    ben_gua_name = HEXAGRAMS_DB.get(ben_gua_code, {}).get("name", "")
+    bian_gua_name = HEXAGRAMS_DB.get(bian_gua_code, {}).get("name", "")
     dong = compute_dong_yao(lines)
     n = len(dong)
     allidx = list(range(6))
@@ -508,8 +500,8 @@ def compute_yao_info(lines, ben_gua_name: str, bian_gua_name: str) -> dict:
             rule = "六爻皆动（乾坤除外）：参看本卦彖辞（卦辞）与变卦爻辞合断吉凶。"
             special = "六爻纠缠、情势杂沓，宜以所见卦致（彖）断之，并纳变卦爻辞象意。"
 
-    ben_yao = YAO_CI_DB.get(ben_gua_name) or ["" for _ in range(6)]
-    bian_yao = YAO_CI_DB.get(bian_gua_name) or ["" for _ in range(6)]
+    ben_yao = HEXAGRAMS_DB.get(ben_gua_code, {}).get("yao_ci") or ["" for _ in range(6)]
+    bian_yao = HEXAGRAMS_DB.get(bian_gua_code, {}).get("yao_ci") or ["" for _ in range(6)]
 
     ben_dong_ci = [f"{YAO_POSITIONS[i]}『{ben_yao[i]}』" for i in dong if i < len(ben_yao) and ben_yao[i]]
     bian_dong_ci = [f"{YAO_POSITIONS[i]}『{bian_yao[i]}』" for i in dong if i < len(bian_yao) and bian_yao[i]]
@@ -779,9 +771,6 @@ def compute_line_interactions(lines) -> dict:
     return {"lines": rels, "highlights": highlights, "geshan": geshan_highlights}
 
 
-load_yao_ci()
-
-
 # ====================================================================
 # 模块九：AI 解卦引擎（OpenAI 兼容 API）
 # ====================================================================
@@ -944,7 +933,7 @@ def build_user_prompt(
             )
 
     # 动爻取用法则定主 + 附本卦/变卦爻辞
-    yaoci = compute_yao_info(lines, ben_gua_name, bian_gua_name)
+    yaoci = compute_yao_info(lines, ben_gua_code, bian_gua_code)
     yao_parts = [f"动爻取用：{yaoci['zhugong_rule']}"]
     if yaoci['zhugong_pos']:
         yao_parts.append(f"　取用主爻：{yaoci['zhugong_pos']}，其爻辞『{yaoci['zhugong_ci']}』")
@@ -1251,7 +1240,7 @@ def _enrich_paipan(gua_result: dict, now: Optional[datetime] = None) -> dict:
 
     # 动爻取用主爻 + 爻辞（供前端展示）
     gua_result["yao_info"] = compute_yao_info(
-        gua_result["lines"], ben_gua_info["name"], bian_gua_info["name"]
+        gua_result["lines"], gua_result["ben_gua_code"], gua_result["bian_gua_code"]
     )
 
     # 爻与爻五行生克网络（供前端展示与 AI 解卦）
