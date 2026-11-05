@@ -1478,7 +1478,8 @@ function renderPaipan(data) {
             stHTML += '<div class="yao-rule" style="color:var(--vermillion);">※ ' + yi.special + '</div>';
         }
         if (yi.ben_dong_yao_ci && yi.ben_dong_yao_ci.length) {
-            stHTML += '<div class="yao-ci-line"><b>本卦动爻爻辞：</b>' + yi.ben_dong_yao_ci.join('；') + '</div>';
+            var benLabel = yi.zhugong_pos ? '其余动爻爻辞：' : '本卦动爻爻辞：';
+            stHTML += '<div class="yao-ci-line"><b>' + benLabel + '</b>' + yi.ben_dong_yao_ci.join('；') + '</div>';
         }
         if (yi.bian_dong_yao_ci && yi.bian_dong_yao_ci.length) {
             stHTML += '<div class="yao-ci-line"><b>变卦对应爻辞：</b>' + yi.bian_dong_yao_ci.join('；') + '</div>';

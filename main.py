@@ -503,7 +503,9 @@ def compute_yao_info(lines, ben_gua_code: str, bian_gua_code: str) -> dict:
     ben_yao = HEXAGRAMS_DB.get(ben_gua_code, {}).get("yao_ci") or ["" for _ in range(6)]
     bian_yao = HEXAGRAMS_DB.get(bian_gua_code, {}).get("yao_ci") or ["" for _ in range(6)]
 
-    ben_dong_ci = [f"{YAO_POSITIONS[i]}『{ben_yao[i]}』" for i in dong if i < len(ben_yao) and ben_yao[i]]
+    # 本卦动爻爻辞：排除已单列的取用主爻，避免同一句爻辞重复出现
+    qita_dong = [i for i in dong if i != idx]
+    ben_dong_ci = [f"{YAO_POSITIONS[i]}『{ben_yao[i]}』" for i in qita_dong if i < len(ben_yao) and ben_yao[i]]
     bian_dong_ci = [f"{YAO_POSITIONS[i]}『{bian_yao[i]}』" for i in dong if i < len(bian_yao) and bian_yao[i]]
     zhu_ci = ben_yao[idx] if (idx is not None and idx < len(ben_yao) and ben_yao[idx]) else ""
 
@@ -940,8 +942,9 @@ def build_user_prompt(
     if yaoci['special']:
         yao_parts.append(f"　{yaoci['special']}")
     if yaoci['ben_dong_yao_ci']:
-        yao_parts.append("　本卦动爻爻辞：" + "；".join(yaoci['ben_dong_yao_ci']))
-    else:
+        label = "其余动爻爻辞" if yaoci['zhugong_pos'] else "本卦动爻爻辞"
+        yao_parts.append(f"　{label}：" + "；".join(yaoci['ben_dong_yao_ci']))
+    elif yaoci['dong_count'] == 0:
         yao_parts.append("　本卦为静卦，无动爻爻辞可引，以彖辞（卦辞）取象。")
     if yaoci['bian_dong_yao_ci']:
         yao_parts.append("　变卦对应动爻爻辞：" + "；".join(yaoci['bian_dong_yao_ci']))
