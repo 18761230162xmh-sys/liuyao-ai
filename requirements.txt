@@ -1,6 +1,8 @@
-fastapi>=0.100.0
-uvicorn>=0.23.0
-httpx>=0.24.0
-python-dotenv>=1.0.0
-lunar-python>=1.0.0
-pydantic>=2.0.0
+# 运行环境：Python 3.10+（开发与验证使用 3.14）
+# 以下版本为实际验证通过的确切版本，避免上游更新带来行为变化
+fastapi==0.139.0
+uvicorn==0.51.0
+httpx==0.28.1
+python-dotenv==1.2.2
+lunar-python==1.4.8
+pydantic==2.13.4

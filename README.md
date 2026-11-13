@@ -20,8 +20,9 @@
 ├─ static/index.html         前端单页（HTML + CSS + JS）
 ├─ hexagrams.json            六十四卦基础数据 + 爻辞
 ├─ jiao_yilin.json           焦氏易林林辞
-├─ requirements.txt          依赖清单
+├─ requirements.txt          依赖清单（固定版本）
 ├─ .env.example              环境变量模板
+├─ LICENSE                   MIT 开源协议
 └─ README.md
 ```
 
@@ -90,6 +91,10 @@ python main.py
 - 上游 AI 报错只记录在服务端日志，对外统一返回通用文案，不泄露模型名、地址或上游响应。
 - 内置请求体上限（413）与单 IP 滑动窗口限流（429 + `Retry-After`），默认监听 `127.0.0.1`。
 - 如需公网部署：改为 `0.0.0.0` 前请加反向代理、鉴权与 HTTPS；限流状态保存在进程内，多实例部署需换成 Redis 等共享存储。
+
+## 许可证
+
+本项目基于 [MIT License](LICENSE) 开源，可自由使用、修改与分发，保留版权声明即可。
 
 ## 免责声明
 
