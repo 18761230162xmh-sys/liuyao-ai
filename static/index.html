@@ -1451,18 +1451,11 @@ async function doJudge() {
             try { var j = await resp.json(); if (j && j.detail) msg = j.detail; } catch(e) {}
             throw new Error(msg);
         }
-        if (!resp.body || !resp.body.getReader) throw new Error('当前浏览器不支持流式响应');
-
-        const reader = resp.body.getReader();
-        const decoder = new TextDecoder('utf-8');
         let buf = '', streamError = '';
 
-        while (true) {
-            const step = await reader.read();
-            if (step.done) break;
-            armJudgeIdle();
-            buf += decoder.decode(step.value, { stream: true });
-
+        // 逐个解析已到达的 SSE 事件
+        function pump(text) {
+            buf += text;
             let idx;
             while ((idx = buf.indexOf('\n\n')) >= 0) {
                 var ev = parseSSEBlock(buf.slice(0, idx));
@@ -1481,6 +1474,21 @@ async function doJudge() {
                     streamError = (ev.data && ev.data.message) || '解卦失败，请稍后重试';
                 }
             }
+        }
+
+        // 微信旧内核不支持 ReadableStream 时，整段读完再解析，结果一致
+        if (resp.body && resp.body.getReader) {
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            while (true) {
+                const step = await reader.read();
+                if (step.done) break;
+                armJudgeIdle();
+                pump(decoder.decode(step.value, { stream: true }));
+            }
+        } else {
+            pump(await resp.text());
+            pump('\n\n');
         }
 
         if (streamError) throw new Error(streamError);

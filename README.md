@@ -57,6 +57,7 @@ python main.py
 | `MAX_BODY_BYTES` | `1048576` | 单次请求体上限，超限返回 413 |
 | `RATE_LIMIT_PER_MINUTE` | `10` | 单 IP 每分钟解卦次数，0 关闭限流，超限返回 429 |
 | `ADMIN_TOKEN` | 空 | 携带该令牌请求 `/api/health` 才会返回模型与限额详情 |
+| `TRUST_PROXY` | `0` | 置于内网穿透/反向代理后置 `1`，限流按转发头里的真实访客 IP 统计 |
 
 ## 接口
 
@@ -83,6 +84,18 @@ python main.py
 - `jiao_yilin.json`：按「本卦之变卦」短名索引的焦氏易林林辞。
 
 以上文本均为传统典籍内容，仅作学习与研究使用。
+
+## 临时公网试用
+
+不买服务器也能让外网访问，用 Cloudflare 临时隧道：
+
+```powershell
+cloudflared tunnel --url http://127.0.0.1:8000 --protocol quic
+```
+
+命令会输出一个 `https://xxx.trycloudflare.com` 地址，直接分享即可。此时建议在 `.env` 里设 `TRUST_PROXY=1`，限流才会按访客真实 IP 统计；否则所有访客共用本机 IP 的额度。
+
+隧道随进程退出失效，地址每次重启都会变。长期使用请部署到云服务器，并在反向代理层配 HTTPS。
 
 ## 安全提示
 

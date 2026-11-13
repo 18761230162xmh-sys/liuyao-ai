@@ -49,6 +49,8 @@ APP_PORT = _env_int("APP_PORT", 8000)
 MAX_BODY_BYTES = _env_int("MAX_BODY_BYTES", 1048576)          # 请求体上限 1 MB
 RATE_LIMIT_PER_MINUTE = _env_int("RATE_LIMIT_PER_MINUTE", 10)  # 单 IP 每分钟解卦次数
 ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")                     # 健康检查详情所需令牌
+# 置于内网穿透/反向代理之后时置 1，限流按真实访客 IP 统计；直接对外暴露时保持 0，防止伪造头绕过限流
+TRUST_PROXY = os.getenv("TRUST_PROXY", "").strip().lower() in ("1", "true", "yes", "on")
 
 # 对外统一的 AI 故障文案：具体原因只进服务端日志
 AI_SERVICE_UNAVAILABLE = "AI 解卦服务暂时不可用，请稍后重试"
@@ -192,6 +194,15 @@ def parse_solar_date(s: Optional[str]) -> Optional[datetime]:
                         int(m.group(4)), int(m.group(5)))
     except ValueError:
         return None
+
+
+def client_ip_of(request: Request) -> str:
+    """取访客 IP：仅当 TRUST_PROXY 开启时才采信反向代理/穿透层写入的转发头"""
+    if TRUST_PROXY:
+        ip = request.headers.get("cf-connecting-ip") or request.headers.get("x-forwarded-for", "")
+        if ip:
+            return ip.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 # ── 进程内滑动窗口限流（单实例部署足够；多实例请换 Redis）──
@@ -1252,7 +1263,7 @@ class DivinationResponse(BaseModel):
 async def divine(req: DivinationRequest, request: Request):
     """AI 解卦接口 —— 服务端按卦码重算排盘，不信任前端传入的纳甲/六亲/神煞"""
     # 限流：解卦是唯一消耗上游额度的接口
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_of(request)
     retry_after = check_rate_limit(client_ip)
     if retry_after:
         return JSONResponse(
@@ -1281,7 +1292,7 @@ async def divine(req: DivinationRequest, request: Request):
 @app.post("/api/divine/stream")
 async def divine_stream(req: DivinationRequest, request: Request):
     """AI 解卦（SSE 流式）：先下发重算后的排盘与林辞，再逐段推送断语"""
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = client_ip_of(request)
     retry_after = check_rate_limit(client_ip)
     if retry_after:
         return JSONResponse(
