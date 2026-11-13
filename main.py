@@ -13,7 +13,9 @@ import os
 import json
 import re
 import sys
+import hashlib
 from collections import defaultdict, deque
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -21,7 +23,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 import httpx
@@ -52,7 +54,16 @@ ADMIN_TOKEN = os.getenv("ADMIN_TOKEN", "")                     # 健康检查详
 AI_SERVICE_UNAVAILABLE = "AI 解卦服务暂时不可用，请稍后重试"
 
 # ── FastAPI 应用 ──
-app = FastAPI(title="AI 六爻排盘解卦 Agent", version="2.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """启动时预热上游客户端（省掉首请求约 0.5s 初始化），退出时关闭连接池"""
+    if OPENAI_API_KEY and OPENAI_BASE_URL:
+        _get_ai_client()          # 定义在下方，启动时模块已加载完毕
+    yield
+    await _shutdown_ai_client()
+
+
+app = FastAPI(title="AI 六爻排盘解卦 Agent", version="2.1.0", lifespan=lifespan)
 
 
 @app.middleware("http")
@@ -474,6 +485,10 @@ def lookup_gua(code: str) -> dict:
 
 # 启动时加载
 load_hexagrams()
+
+# 知识库一次性序列化 + ETag：浏览器按 If-None-Match 复验，未变更返回 304
+HEXAGRAMS_JSON_BODY = json.dumps(HEXAGRAMS_DB, ensure_ascii=False).encode("utf-8")
+HEXAGRAMS_ETAG = '"' + hashlib.sha1(HEXAGRAMS_JSON_BODY).hexdigest()[:20] + '"'
 
 
 # ====================================================================
@@ -1118,24 +1133,37 @@ def gua_jiao_yilin_text(ben_gua_name: str, bian_gua_name: str, jiao_yilin: str) 
     return "（此本变卦组合未录入《焦氏易林》，可仅引用本卦卦辞与本题爻辞。\n"
 
 
-async def ai_interpret(question: str, time_info: dict, gua_result: dict) -> str:
-    """
-    调用 OpenAI 兼容 API 进行 AI 解卦。
-    失败时统一返回通用文案，具体原因（上游状态码、响应体、base_url）只写服务端日志，
-    避免把内部配置与上游细节回显到浏览器。
-    """
-    try:
-        ben_gua = lookup_gua(gua_result["ben_gua_code"])
-        bian_gua = lookup_gua(gua_result["bian_gua_code"])
-    except Exception as e:
-        print(f"[AI] 卦码查找失败：{type(e).__name__}: {e}", file=sys.stderr, flush=True)
-        raise HTTPException(status_code=422, detail="排盘数据无效")
-
+def _require_ai_config() -> None:
+    """未配置上游时统一 503，避免把配置状态写进页面"""
     if not OPENAI_API_KEY or not OPENAI_BASE_URL:
         print("[AI] 未配置 OPENAI_BASE_URL / OPENAI_API_KEY", file=sys.stderr, flush=True)
         raise HTTPException(status_code=503, detail=AI_SERVICE_UNAVAILABLE)
 
+
+# 复用同一个 httpx 客户端：Windows 上每次新建客户端要初始化 SSL 证书库（约 0.5s），
+# 复用后首字节延迟明显降低，也能复用与上游的 keep-alive 连接
+_ai_client: Optional[httpx.AsyncClient] = None
+
+
+def _get_ai_client() -> httpx.AsyncClient:
+    global _ai_client
+    if _ai_client is None or _ai_client.is_closed:
+        _ai_client = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0))
+    return _ai_client
+
+
+async def _shutdown_ai_client():
+    global _ai_client
+    if _ai_client is not None:
+        await _ai_client.aclose()
+        _ai_client = None
+
+
+def _build_ai_payload(question: str, time_info: dict, gua_result: dict) -> dict:
+    """组装上游请求体；排盘数据异常统一按 422 处理"""
     try:
+        ben_gua = lookup_gua(gua_result["ben_gua_code"])
+        bian_gua = lookup_gua(gua_result["bian_gua_code"])
         jiao_yilin = lookup_jiao(ben_gua["name"], bian_gua["name"])
         user_prompt = build_user_prompt(
             question, time_info,
@@ -1149,37 +1177,49 @@ async def ai_interpret(question: str, time_info: dict, gua_result: dict) -> str:
         print(f"[AI] Prompt 组装失败：{type(e).__name__}: {e}", file=sys.stderr, flush=True)
         raise HTTPException(status_code=422, detail="排盘数据无效")
 
+    return {
+        "model": OPENAI_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.7,
+        "max_tokens": 4096,
+    }
+
+
+async def ai_interpret(question: str, time_info: dict, gua_result: dict) -> str:
+    """
+    调用 OpenAI 兼容 API 进行 AI 解卦（非流式）。
+    失败时统一返回通用文案，具体原因（上游状态码、响应体、base_url）只写服务端日志，
+    避免把内部配置与上游细节回显到浏览器。
+    """
+    _require_ai_config()
+    payload = _build_ai_payload(question, time_info, gua_result)
+
     try:
-        async with httpx.AsyncClient(timeout=90.0) as client:
-            resp = await client.post(
-                f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": OPENAI_MODEL,
-                    "messages": [
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "temperature": 0.7,
-                    "max_tokens": 4096,
-                },
-            )
+        client = _get_ai_client()
+        resp = await client.post(
+            f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
 
-            if resp.status_code != 200:
-                print(f"[AI] upstream_status={resp.status_code} body={resp.text[:300]}",
-                      file=sys.stderr, flush=True)
-                raise HTTPException(status_code=502, detail=AI_SERVICE_UNAVAILABLE)
+        if resp.status_code != 200:
+            print(f"[AI] upstream_status={resp.status_code} body={resp.text[:300]}",
+                  file=sys.stderr, flush=True)
+            raise HTTPException(status_code=502, detail=AI_SERVICE_UNAVAILABLE)
 
-            data = resp.json()
-            try:
-                return data["choices"][0]["message"]["content"]
-            except (KeyError, IndexError, TypeError) as e:
-                print(f"[AI] 响应结构异常：{type(e).__name__}: {str(data)[:300]}",
-                      file=sys.stderr, flush=True)
-                raise HTTPException(status_code=502, detail=AI_SERVICE_UNAVAILABLE)
+        data = resp.json()
+        try:
+            return data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError) as e:
+            print(f"[AI] 响应结构异常：{type(e).__name__}: {str(data)[:300]}",
+                  file=sys.stderr, flush=True)
+            raise HTTPException(status_code=502, detail=AI_SERVICE_UNAVAILABLE)
 
     except httpx.RequestError as e:
         print(f"[AI] 网络异常：{type(e).__name__}: {e} base_url={OPENAI_BASE_URL}",
@@ -1221,43 +1261,125 @@ async def divine(req: DivinationRequest, request: Request):
             headers={"Retry-After": str(retry_after)},
         )
 
+    prepared = _prepare_divine(req)
+
+    # AI 解卦（非流式）
+    interpretation = await ai_interpret(
+        req.question or "未说明具体事项", prepared["time_info"], prepared["gua_result"]
+    )
+
+    return DivinationResponse(
+        time_info=prepared["time_info"],
+        gua_result=prepared["gua_result"],
+        ben_gua_info=prepared["ben_gua_info"],
+        bian_gua_info=prepared["bian_gua_info"],
+        interpretation=interpretation,
+        jiao_yilin=prepared["jiao_yilin"],
+    )
+
+
+@app.post("/api/divine/stream")
+async def divine_stream(req: DivinationRequest, request: Request):
+    """AI 解卦（SSE 流式）：先下发重算后的排盘与林辞，再逐段推送断语"""
+    client_ip = request.client.host if request.client else "unknown"
+    retry_after = check_rate_limit(client_ip)
+    if retry_after:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "请求过于频繁，请稍后再试"},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    _require_ai_config()   # 未配置上游时直接 503，不进入流式分支
+    prepared = _prepare_divine(req)
+    payload = _build_ai_payload(
+        req.question or "未说明具体事项", prepared["time_info"], prepared["gua_result"]
+    )
+    meta = {
+        "time_info": prepared["time_info"],
+        "gua_result": prepared["gua_result"],
+        "ben_gua_info": prepared["ben_gua_info"],
+        "bian_gua_info": prepared["bian_gua_info"],
+        "jiao_yilin": prepared["jiao_yilin"],
+    }
+    return StreamingResponse(
+        _sse_interpret(payload, meta),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # 反向代理下禁用缓冲
+        },
+    )
+
+
+def _prepare_divine(req: DivinationRequest) -> dict:
+    """校验参数并按卦码 + 起卦时间在服务端重算排盘，不信任前端传回的纳甲/六亲/神煞"""
     time_info_in = req.time_info or {}
     gua_result_in = req.gua_result or {}
 
-    # 参数校验：卦码必须存在于知识库，防止无效数据流入 AI prompt
     ben_code = str(gua_result_in.get("ben_gua_code", ""))
     bian_code = str(gua_result_in.get("bian_gua_code", ""))
     if ben_code not in HEXAGRAMS_DB or bian_code not in HEXAGRAMS_DB:
         raise HTTPException(status_code=422, detail="排盘数据无效：卦码须为六十四卦")
 
-    # 起卦时间以服务端解析为准，防止伪造日辰/月建污染断卦
     now = parse_solar_date(time_info_in.get("solar_date"))
     if now is None:
         raise HTTPException(status_code=422, detail="时间信息无效：solar_date 格式不正确")
 
-    # 按卦码重建基础爻象，再用服务端规则重算六神/纳甲/六亲/世应/神煞/生克
-    enriched = _enrich_paipan(_build_base_lines(ben_code, bian_code), now=now)
-    time_info = enriched["time_info"]
-    gua_result = enriched["gua_result"]
-    ben_gua_info = enriched["ben_gua_info"]
-    bian_gua_info = enriched["bian_gua_info"]
-
-    # 焦氏易林林辞（供前端展示 + AI 引用）
-    jiao_yilin = lookup_jiao(ben_gua_info["name"], bian_gua_info["name"])
-
-    # AI 解卦
-    interpretation = await ai_interpret(
-        req.question or "未说明具体事项", time_info, gua_result
+    prepared = _enrich_paipan(_build_base_lines(ben_code, bian_code), now=now)
+    prepared["jiao_yilin"] = lookup_jiao(
+        prepared["ben_gua_info"]["name"], prepared["bian_gua_info"]["name"]
     )
+    return prepared
 
-    return DivinationResponse(
-        time_info=time_info,
-        gua_result=gua_result,
-        ben_gua_info=ben_gua_info,
-        bian_gua_info=bian_gua_info,
-        interpretation=interpretation,
-        jiao_yilin=jiao_yilin,
-    )
+
+def _sse(event: str, data: dict) -> str:
+    """单条 SSE 事件（event + JSON data）"""
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _sse_interpret(payload: dict, meta: dict):
+    """把上游流式增量转成 SSE：meta → delta* → done / error"""
+    yield _sse("meta", meta)
+    try:
+        client = _get_ai_client()
+        async with client.stream(
+            "POST",
+            f"{OPENAI_BASE_URL.rstrip('/')}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={**payload, "stream": True},
+        ) as resp:
+            if resp.status_code != 200:
+                body = await resp.aread()
+                print(f"[AI][stream] upstream_status={resp.status_code} "
+                      f"body={body[:300].decode('utf-8', 'replace')}",
+                      file=sys.stderr, flush=True)
+                yield _sse("error", {"message": AI_SERVICE_UNAVAILABLE})
+                return
+
+            async for line in resp.aiter_lines():
+                if not line.startswith("data:"):
+                    continue
+                chunk = line[5:].strip()
+                if not chunk:
+                    continue
+                if chunk == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(chunk)
+                    text = obj["choices"][0]["delta"].get("content") or ""
+                except (json.JSONDecodeError, KeyError, IndexError, TypeError):
+                    continue
+                if text:
+                    yield _sse("delta", {"text": text})
+    except Exception as e:
+        print(f"[AI][stream] {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+        yield _sse("error", {"message": AI_SERVICE_UNAVAILABLE})
+        return
+    yield _sse("done", {})
 
 
 def _build_base_lines(ben_code: str, bian_code: str) -> dict:
@@ -1384,9 +1506,17 @@ async def paipan(req: PaipanRequest):
 
 
 @app.get("/api/hexagrams")
-async def hexagrams_list():
-    """返回六十四卦知识库，供前端构建卦选择器"""
-    return HEXAGRAMS_DB
+async def hexagrams_list(request: Request):
+    """返回六十四卦知识库；带 ETag，未变更时浏览器复验得 304"""
+    if request.headers.get("if-none-match") == HEXAGRAMS_ETAG:
+        return Response(status_code=304, headers={
+            "ETag": HEXAGRAMS_ETAG,
+            "Cache-Control": "no-cache",
+        })
+    return Response(content=HEXAGRAMS_JSON_BODY, media_type="application/json", headers={
+        "ETag": HEXAGRAMS_ETAG,
+        "Cache-Control": "no-cache",
+    })
 
 
 @app.get("/api/health")

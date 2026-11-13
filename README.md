@@ -11,6 +11,7 @@
 - **天机时间罗盘**：四柱、农历、旬空，支持指定历史起卦时间
 - **经典排盘表**：仿主流六爻排盘软件的分列展示，含动爻与世应摘要
 - **AI 解卦**：OpenAI 兼容接口，内置 11 条断卦规则，按四段式输出
+- **流式输出**：解卦走 SSE 逐段上屏，可中途停止，60 秒无数据自动断开
 
 ## 目录结构
 
@@ -61,8 +62,9 @@ python main.py
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | POST | `/api/paipan` | 按本卦/变卦卦码排盘，动爻 = 两卦码逐爻差异 |
-| POST | `/api/divine` | AI 解卦（需配置模型） |
-| GET | `/api/hexagrams` | 六十四卦知识库 |
+| POST | `/api/divine` | AI 解卦，一次性返回完整断语 |
+| POST | `/api/divine/stream` | AI 解卦，SSE 流式：`meta` → `delta`* → `done` / `error` |
+| GET | `/api/hexagrams` | 六十四卦知识库（带 ETag，未变更返回 304） |
 | GET | `/api/health` | 健康检查与配置状态 |
 
 `/api/paipan` 请求示例：

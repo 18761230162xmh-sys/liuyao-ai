@@ -654,6 +654,31 @@ body {
     text-shadow: 0 1px 12px rgba(212,175,55,0.18);
 }
 .interpretation .iv-title:first-child { margin-top: 0; }
+/* 流式输出光标 */
+.interpretation .stream-caret {
+    display:inline-block; width:2px; height:1em; margin-left:3px;
+    background: var(--gold); vertical-align:-0.14em;
+    animation: caretBlink 1s step-end infinite;
+}
+@keyframes caretBlink { 50% { opacity:0; } }
+
+/* ── 浮动提示（替代 alert） ── */
+.toast {
+    position:fixed; left:50%; bottom:28px;
+    transform:translateX(-50%) translateY(8px);
+    max-width:min(90vw, 520px);
+    padding:10px 16px; border-radius:4px;
+    background:rgba(28,20,18,0.96);
+    border:1px solid rgba(195,39,43,0.45);
+    color: var(--text);
+    font-size:0.8rem; line-height:1.7; letter-spacing:0.04em;
+    box-shadow:0 10px 30px rgba(0,0,0,0.55);
+    opacity:0; pointer-events:none;
+    transition:opacity .25s, transform .25s;
+    z-index:999;
+}
+.toast.show { opacity:1; transform:translateX(-50%) translateY(0); }
+.toast.ok { border-color:rgba(58,140,110,0.55); }
 
 /* ── 页脚 ── */
 .footer {
@@ -834,6 +859,7 @@ body {
 
     <p class="footer">— 六爻纳甲 · 诚则灵 —</p>
 </div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
 // ── DOM 元素 ──
@@ -861,6 +887,19 @@ let qiguaTimeDirty = false;   // 用户手动改过起卦时间后不再自动�
 
 let paipanData = null;
 let guaOptions = [];   // [{code, name, palace, element}]
+
+// ── 浮动提示：替代 alert，不打断操作 ──
+const toastEl = document.getElementById('toast');
+let toastTimer = null;
+function showToast(msg, ok) {
+    if (!toastEl) return;
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = null; }
+    if (!msg) { toastEl.classList.remove('show'); return; }
+    toastEl.textContent = msg;
+    toastEl.classList.toggle('ok', !!ok);
+    toastEl.classList.add('show');
+    toastTimer = setTimeout(function(){ toastEl.classList.remove('show'); }, 6000);
+}
 
 // ============================================================
 //  起卦时间：默认自动取当前时刻，可手动指定历史时间
@@ -1001,7 +1040,7 @@ function findGuaCode(hex, name) {
 
 async function initGuaSelect() {
     try {
-        const resp = await fetch('/api/hexagrams?v=' + Date.now());
+        const resp = await fetch('/api/hexagrams');
         const hex = await resp.json();
         guaOptions = Object.keys(hex).map(function(code) {
             var g = hex[code];
@@ -1278,13 +1317,16 @@ function ensureSelectSynced(input, select, label) {
 async function doPaipan() {
     if (paipanBtn.disabled) return;
     if (!ensureSelectSynced(benSearch, benSelect, '本卦')) {
-        alert('本卦选择无效，请从下拉列表中选择完整卦名');
+        showToast('本卦选择无效，请从下拉列表中选择完整卦名');
         return;
     }
     if (!ensureSelectSynced(bianSearch, bianSelect, '变卦')) {
-        alert('变卦选择无效，请从下拉列表中选择完整卦名');
+        showToast('变卦选择无效，请从下拉列表中选择完整卦名');
         return;
     }
+    // 重新排盘前先中止上一次仍在生成的解卦，避免回包写到新结果上
+    if (judgeAbort) { judgeAbortReason = 'user'; judgeAbort.abort(); }
+    showToast('');
     paipanBtn.disabled = true;
     paipanBtn.textContent = '卦 象 排 衍 中 ...';
 
@@ -1298,7 +1340,7 @@ async function doPaipan() {
     try {
         // 未手动改过起卦时间时，排盘前自动刷新为当前时刻
         if (!qiguaTimeDirty) qiguaTimeInput.value = formatLocalNow();
-        const resp = await fetch('/api/paipan?t=' + Date.now(), {
+        const resp = await fetch('/api/paipan', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({
@@ -1326,7 +1368,7 @@ async function doPaipan() {
         // 滚动到卦象区，方便直接读取
         resultZone.scrollIntoView({ behavior:'smooth', block:'start' });
     } catch(e) {
-        alert('排盘失败: ' + e.message);
+        showToast('排盘失败：' + e.message);
     } finally {
         paipanBtn.disabled = false;
         paipanBtn.textContent = '排 盘 · 观 卦 象';
@@ -1334,40 +1376,143 @@ async function doPaipan() {
 }
 
 // ============================================================
-//  AI 判断（手动触发）
+//  AI 判断（SSE 流式输出，可中途停止）
 // ============================================================
+let judgeAbort = null;        // 非空表示正在生成
+let judgeAbortReason = '';    // 'user' | 'timeout'
+let judgeIdleTimer = null;
+let streamText = '';
+let streamRaf = null;
+let streamDone = false;
+
+// 60 秒没有新数据就主动断开，避免页面无限等待
+function armJudgeIdle() {
+    if (judgeIdleTimer) clearTimeout(judgeIdleTimer);
+    judgeIdleTimer = setTimeout(function() {
+        if (judgeAbort) { judgeAbortReason = 'timeout'; judgeAbort.abort(); }
+    }, 60000);
+}
+
+function paintStream() {
+    streamRaf = null;
+    interpretation.innerHTML = formatInterpretation(streamText)
+        + (streamDone ? '' : '<span class="stream-caret"></span>');
+}
+
+function scheduleStreamPaint() {
+    if (streamRaf) return;
+    streamRaf = requestAnimationFrame(paintStream);
+}
+
+// 解析一个 SSE 事件块（event: xxx \n data: {...}）
+function parseSSEBlock(raw) {
+    var ev = 'message', dataLines = [];
+    raw.split('\n').forEach(function(line) {
+        if (line.indexOf('event:') === 0) ev = line.slice(6).trim();
+        else if (line.indexOf('data:') === 0) dataLines.push(line.slice(5).trim());
+    });
+    if (!dataLines.length) return null;
+    try { return { event: ev, data: JSON.parse(dataLines.join('\n')) }; }
+    catch(e) { return null; }
+}
+
 async function doJudge() {
     if (!paipanData) return;
-    judgeBtn.disabled = true;
-    judgeBtn.textContent = '大师推演中 ...';
+    // 生成中再次点击 = 停止生成
+    if (judgeAbort) { judgeAbortReason = 'user'; judgeAbort.abort(); return; }
+
+    judgeBtn.textContent = '停止生成';
     aiLoading.style.display = 'block';
     interpretation.style.display = 'none';
+    interpretation.innerHTML = '';
+    streamText = '';
+    streamDone = false;
+    showToast('');
+
+    var ctrl = new AbortController();
+    judgeAbort = ctrl;
+    judgeAbortReason = '';
+    armJudgeIdle();
 
     try {
-        const resp = await fetch('/api/divine', {
+        const resp = await fetch('/api/divine/stream', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({
                 question: paipanData.question,
                 gua_result: paipanData.data.gua_result,
                 time_info: paipanData.data.time_info
-            })
+            }),
+            signal: ctrl.signal
         });
-        const data = await resp.json();
+
         if (!resp.ok) {
-            const errDetail = data.detail || data.message || JSON.stringify(data);
-            throw new Error('服务器错误 (' + resp.status + '): ' + errDetail);
+            var msg = '服务器错误 (' + resp.status + ')';
+            try { var j = await resp.json(); if (j && j.detail) msg = j.detail; } catch(e) {}
+            throw new Error(msg);
         }
-        aiLoading.style.display = 'none';
-        interpretation.style.display = 'block';
-        interpretation.innerHTML = formatInterpretation(data.interpretation);
-        renderJiaoYilin(data);
-        interpretation.scrollIntoView({ behavior:'smooth', block:'start' });
+        if (!resp.body || !resp.body.getReader) throw new Error('当前浏览器不支持流式响应');
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let buf = '', streamError = '';
+
+        while (true) {
+            const step = await reader.read();
+            if (step.done) break;
+            armJudgeIdle();
+            buf += decoder.decode(step.value, { stream: true });
+
+            let idx;
+            while ((idx = buf.indexOf('\n\n')) >= 0) {
+                var ev = parseSSEBlock(buf.slice(0, idx));
+                buf = buf.slice(idx + 2);
+                if (!ev) continue;
+
+                if (ev.event === 'meta') {
+                    renderJiaoYilin(ev.data);
+                    aiLoading.style.display = 'none';
+                    interpretation.style.display = 'block';
+                    interpretation.scrollIntoView({ behavior:'smooth', block:'start' });
+                } else if (ev.event === 'delta') {
+                    streamText += (ev.data && ev.data.text) || '';
+                    scheduleStreamPaint();
+                } else if (ev.event === 'error') {
+                    streamError = (ev.data && ev.data.message) || '解卦失败，请稍后重试';
+                }
+            }
+        }
+
+        if (streamError) throw new Error(streamError);
+        if (!streamText) throw new Error('未收到解卦内容，请稍后重试');
+
+        streamDone = true;
+        paintStream();
     } catch(e) {
+        streamDone = true;
         aiLoading.style.display = 'none';
-        interpretation.style.display = 'block';
-        interpretation.textContent = '【解卦请求异常】' + e.message + '\n\n请检查后端服务或 AI API 配置。';
+
+        if (e.name === 'AbortError') {
+            if (streamText) {
+                interpretation.style.display = 'block';
+                paintStream();
+                showToast(judgeAbortReason === 'timeout' ? '生成超时，已保留已生成部分' : '已停止生成');
+            } else {
+                interpretation.style.display = 'none';
+                showToast(judgeAbortReason === 'timeout' ? '等待超时，未收到解卦内容，请重试' : '已取消解卦');
+            }
+        } else if (streamText) {
+            interpretation.style.display = 'block';
+            interpretation.innerHTML = formatInterpretation(streamText);
+            showToast('解卦中断：' + e.message);
+        } else {
+            interpretation.style.display = 'none';
+            showToast('解卦失败：' + e.message);
+        }
     } finally {
+        if (judgeIdleTimer) { clearTimeout(judgeIdleTimer); judgeIdleTimer = null; }
+        if (streamRaf) { cancelAnimationFrame(streamRaf); streamRaf = null; }
+        judgeAbort = null;
         judgeBtn.disabled = false;
         judgeBtn.textContent = '观卦象毕 · 请 大 师 解 卦';
     }
@@ -1622,6 +1767,8 @@ function buildClassicPaipan(data) {
 //  辅助
 // ============================================================
 function resetAll() {
+    if (judgeAbort) { judgeAbortReason = 'user'; judgeAbort.abort(); }
+    showToast('');
     inputCard.style.display = '';
     resultZone.classList.remove('active');
     resultZone.style.display = 'none';
