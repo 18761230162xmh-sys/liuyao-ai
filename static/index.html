@@ -1435,11 +1435,14 @@ async function doJudge() {
     armJudgeIdle();
 
     try {
+        // 以点击解卦时的输入为准：排盘后回头改问题也能生效
+        const question = questionInput.value.trim();
+        paipanData.question = question;
         const resp = await fetch('/api/divine/stream', {
             method:'POST',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({
-                question: paipanData.question,
+                question: question,
                 gua_result: paipanData.data.gua_result,
                 time_info: paipanData.data.time_info
             }),
