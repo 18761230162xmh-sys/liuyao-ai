@@ -562,6 +562,13 @@ body {
 .pp-yao.dong .seg { background:var(--vermillion); box-shadow:0 0 8px rgba(195,39,43,0.55); }
 .pp-yao .dmark { position:absolute; top:-12px; right:-4px; font-style:normal; font-size:0.68rem; font-weight:700; color:var(--vermillion); }
 .pp-najia { font-size:0.95rem; color:var(--paper); letter-spacing:0.06em; font-weight:500; }
+/* 旬空标记：爻支当日空亡 */
+.pp-kong {
+    display:inline-block; margin-left:3px; padding:0 3px;
+    font-size:0.6rem; font-style:normal; line-height:1.35;
+    color:var(--vermillion); border:1px solid rgba(195,39,43,0.55);
+    border-radius:2px; vertical-align:1px; letter-spacing:0;
+}
 .pp-liuqin { font-size:0.8rem; letter-spacing:0.06em; }
 .pp-liuqin.父母{color:#c4a882;} .pp-liuqin.兄弟{color:#6aaa6a;}
 .pp-liuqin.妻财{color:#d4a85c;} .pp-liuqin.官鬼{color:#c46b6b;} .pp-liuqin.子孙{color:#5aaa9a;}
@@ -1733,7 +1740,8 @@ function buildClassicPaipan(data) {
         var dmark = line.is_moving ? '<i class="dmark">' + (line.moving_mark || '○') + '</i>' : '';
         symbolHtml = '<span class="pp-yao ' + (yang ? 'yang' : 'yin') + (line.is_moving ? ' dong' : '') + '">' + segs + dmark + '</span>';
         var moveHtml = line.is_moving
-            ? ' <span class="pp-move">化<span class="hua">' + (line.liuqin_bian || '?') + (nb.dizhi || '') + (nb.wuxing || '') + '</span></span>'
+            ? ' <span class="pp-move">化<span class="hua">' + (line.liuqin_bian || '?') + (nb.dizhi || '') + (nb.wuxing || '')
+              + (line.kong_wang_bian ? '<i class="pp-kong">空</i>' : '') + '</span></span>'
             : '';
 
         var ss = (line.shensha || []).map(function(s) {
@@ -1744,7 +1752,8 @@ function buildClassicPaipan(data) {
             + '<span class="pp-liushen ' + ls + '">' + ls + '</span>'
             + '<span class="pp-pos">' + (line.position || '') + '</span>'
             + symbolHtml
-            + '<span class="pp-najia">' + (nj.dizhi || '') + (nj.wuxing || '') + '</span>'
+            + '<span class="pp-najia">' + (nj.dizhi || '') + (nj.wuxing || '')
+              + (line.kong_wang ? '<i class="pp-kong">空</i>' : '') + '</span>'
             + '<span class="pp-liuqin ' + lq + '">' + lq + '</span>'
             + (sy ? '<span class="pp-shie ' + sy + '">' + sy + '</span>' : '<span></span>')
             + '<span>' + moveHtml + ss + '</span>'
